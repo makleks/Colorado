@@ -1,0 +1,217 @@
+---
+title: "Covid Final"
+
+date: "8/12/2021"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, tidy.opts = list(width.cutoff = 60), tidy = TRUE)
+options(width = 80)
+
+library(tidyverse)
+library(ggplot2)
+library(lubridate)
+library(zoo)
+```
+
+## John's Hopkins Covid Data
+
+The Covid-19 pandemic has had a massive impact in almost all aspects of daily life for people all over the world. In this notebook we will be studying data compiled by the John's Hopkins Institute on the spread of the disease and the tragic widespread fatalities that are a consequence of this.
+
+Let us begin by loading the dataset from the 
+
+```{r loaddata}
+url <- paste0('https://raw.githubusercontent.com/CSSEGISandData/COVID-19/',
+'master/csse_covid_19_data/csse_covid_19_time_series/')
+
+file_names <- c('time_series_covid19_confirmed_US.csv',
+                'time_series_covid19_confirmed_global.csv', 
+                'time_series_covid19_deaths_US.csv', 
+                'time_series_covid19_deaths_global.csv', 
+                'time_series_covid19_recovered_global.csv')
+
+url_list <- str_c(url, file_names)
+```
+
+Now we read in our data into variables.
+
+``` {r readdata}
+US_cases <- read_csv(url_list[1])
+global_cases <- read_csv(url_list[2])
+US_deaths <- read_csv(url_list[3])
+global_deaths <- read_csv(url_list[4])
+```
+
+Now we tidy up the data a little. And we will see how it looks.
+
+``` {r tidydata}
+global_cases <- global_cases %>% 
+  pivot_longer(cols = -c('Province/State', 'Country/Region', Lat, Long), names_to = "date", values_to = "cases") %>% select(-c(Lat, Long))
+
+global_deaths <- global_deaths %>% pivot_longer(cols = -c('Province/State', 'Country/Region', Lat, Long), names_to = "date", values_to = "deaths") %>% select(-c(Lat, Long))
+
+head(global_cases)
+head(global_deaths)
+
+```
+
+Let's now create a combined dataset.
+
+```{r combine}
+global <- global_cases %>% full_join(global_deaths) %>% rename( Country_Region = 'Country/Region', Province_State = 'Province/State') %>% mutate(date = mdy(date))
+
+#filter out days with zero cases
+
+global <- global %>% filter(cases>0)
+
+#create  a combined key
+global <- global %>% unite("Combined_Key", c(Province_State, Country_Region), sep =", ", na.rm = TRUE, remove = FALSE)
+
+head(global)
+summary(global)
+  
+```
+
+
+We are going to download a population dataset and combined with ours.
+
+```{r populat}
+uid_url_look_up <- paste0('https://raw.githubusercontent.com/CSSEGISandData/', 
+                        'COVID-19/master/csse_covid_19_data/UID_ISO_FIPS_LookUp_Table.csv')
+uid <- read_csv(uid_url_look_up)
+uid <- uid %>% select(-c(Lat, Long_, Combined_Key, iso2, iso3, Admin2))
+
+global <- global %>% left_join(uid, by = c("Province_State", "Country_Region")) %>% select(-c(UID, FIPS)) %>% select(c(Province_State, Country_Region, date, cases, deaths, Population, Combined_Key))
+global
+```
+
+
+
+## The 3 Waves of a Pandemic
+
+We will divert here from the analyses carried out in class, and instead of looking at cumulative Total numbers we will consider daily new cases. We hope to be able to tease out the "waves" of infections that we've heard about over the last year or so.
+
+Let's extract the daily cases rate from our dataset. The below code does this by subtracting the current days case total from the previous days value. 
+
+```{r daily_cases}
+global <- global %>% group_by(Country_Region, Province_State) %>% mutate(daily_cases = cases - lag(cases, default = 0)) %>% ungroup()
+```
+
+Now that we have our daily cases we will plot the daily trand over the course of the pandemic so far. In doing so we will focus on just 3 different countries and observe how the pandemic played out. The 3 countries in question are the United States, Brazil and the United Kingdom.
+
+```{r case_plot}
+country_list <- c('US', 'United Kingdom', 'Brazil')
+cases_df_3 <- global %>% filter(Country_Region %in% country_list)
+
+# we make use of the rollmean() funcion from the 'zoo' package to calculate a moving average that makes our graph more intelligible.
+g_case <- ggplot(cases_df_3, aes(x=date, y= rollmean(daily_cases,7, na.pad=TRUE), group = Country_Region, color=Country_Region)) + geom_point()
+
+g_case
+```
+
+From the graph it appears that the US and UK ptterns follow a similar pattern, both countries experiencing a sharp spike in cases in the winter months. The different pattern in the Brazil data could be as a result of it being a tropical nation with a very different climate.
+
+Let's move on and perform thesame analysis but with number daily deaths this time instead.
+
+
+```{r death_plot}
+global <- global %>% group_by(Country_Region, Province_State) %>% mutate(daily_deaths = deaths - lag(deaths, default = 0)) %>% ungroup()
+
+deaths_df_3 <- global %>% filter(Country_Region %in% country_list)
+
+# we make use of the rollmean() funcion from the 'zoo' package to calculate a moving average that makes our graph more intelligible.
+g_death <- ggplot(deaths_df_3, aes(x=date, y= rollmean(daily_deaths,7, na.pad=TRUE), group = Country_Region, color=Country_Region)) + geom_point()
+
+g_death
+```
+
+Two things are immediately of note on examining this graph. The first thing is that although all 3 graphs follow roughly the same pattern over the period, there is a noticeable lag in the Brazil data with peaks occuring about 6 weeks later than the US-UK peaks.
+The second striking observation is the sheer size of the 2nd peak in Brazil. This is roughly thesame number of total daily deaths as occured in the US at its' peak despite Brazil having a population a third smaller than the US. This is surprising because the US when you consider that the rate in the US was already quite high compared to most places around the world. 
+
+
+
+## The Relationship National Development and Covid-19 Fatalities
+
+The following analysis is motivated by the initial worries about the effect the pandemic was going to have on porrer nations as the virus spread. We are going to use the Life Expectancy at Birht as a proxy for less-developed nations and we will look at what this metric can tell us about the impact of the Covid-19 pandemic over the last two and a half years.
+
+We begin by downloading the a table of life expectancies for different countries from the World Health Organisation (WHO) website.
+
+```{r life_expectancy}
+# download the csv data
+life_df <- life_exp <- read_csv(paste0('https://apps.who.int/gho/athena/data/GHO/', 
+                                       'WHOSIS_000001,WHOSIS_000015,WHOSIS_000002,WHOSIS_000007?filter=COUNTRY:', '*&x-sideaxis=COUNTRY;YEAR&x-topaxis=GHO;SEX&profile=crosstable&format=csv'), skip=1)
+
+# we will use only data from 2019
+
+life_df <- life_df[life_df$Year==2019,]
+head(life_df)
+
+```
+
+Let's do a little clean up and remove the columns we don't need and rename one column
+
+```{r life_clean}
+life_df <- life_df[,1:3]
+names(life_df)[3] <- 'life_exp'
+
+# we will filter out some inconsistently named countries in the global dataset to speed this analysis
+global2 <- global[global$Country_Region %in% life_df$Country,]
+global2 <- global2 %>% group_by(Country_Region) %>% summarise(deaths = max(deaths), Population=max(Population)) %>% mutate(deaths_per_mill = deaths*1000000/Population) %>% ungroup()
+names(global2)[1] <- 'Country'
+
+global2
+
+# Let's combine into a one dataset 
+
+glo_life_df <- life_df %>% full_join(global2)
+head(glo_life_df)
+
+```
+
+Let's make a plot to visualize the death rate versus the life expectancy in different countries
+
+```{r life_plot}
+g1 <- ggplot(glo_life_df, aes(x = life_exp, y = deaths_per_mill)) + geom_point() + labs(x = 'Life expectancy at Birth', y='Deaths per Million Population')
+g1
+
+```
+
+
+## A Simple Model Proposed
+
+Just based on the above plot we will propose a simple model as a starting point. Our proposal is to split the countries into 2 main groups based on the risk from Covid-19. The first 'Low Risk' group consist of countries with Life Expectancy less than or equalto 70, while those with life expectancy greater than 70 will be classified under 'Interest'. It is important to note that this 'Interest' group does not imply low risk, but rather that more sophisticated methods and further study will be required to understand them.
+
+So, our proposed model is:
+
+$$
+
+\begin{equation}
+  Y=
+  \begin{cases}
+    1, & \text{if}\ x<70 \\
+    0, & \text{otherwise}
+  \end{cases}
+\end{equation}
+
+
+$$
+where Y=1 represents the 'Low-Risk' group of nations and Y=0 represents the nations of further 'Interest'
+
+```{r further plot}
+g1 + geom_vline(xintercept=70, color='orange')
+```
+
+
+
+## Sources of Bias
+
+There are two main sources of bias i tried to avoid. The first is that I recognise that I personally did not agree with the policy responses fromthe government of Brazil, The UK and The US to the pandemic and so I tried to not allow this influence my analysis. Secondly, I tried to avoid making any sweeping generalisations as to the quality and accuracy of data coming from the less developed nations just because the figures were very different from what was expected by many at the start of the pandemic.
+
+
+#Conclusion 
+
+It appears that the covid pandemic has had a markedly less severe impact on poorer countries than it did on more developed nations. This difference is worth exploring further and the reasons behind it uncovered.  
+
