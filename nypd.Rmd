@@ -1,0 +1,139 @@
+---
+title: "NYPD ShootingIncident"
+
+date: "7/21/2021"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(zoo)
+```
+
+## NYPD Shooting Incident
+
+This is a brief examination of the NYPD Shooting Incident Dataset (Historic). We will be exploraing some trends in the data and possible relationships between the variables contained therein.   
+
+We start below by importing the data as a CSV file from <https://catalog.data.gov/dataset> and searching for 'NYPD Shooting Incident Data (Historic)'. 
+
+```{r get_NYPD_data}
+url <- 'https://data.cityofnewyork.us/api/views/833y-fsy8/rows.csv?accessType=DOWNLOAD'
+nypd_data <- read_csv(url)
+```
+
+## Data Cleaning and Transformation 
+
+We will convert the 'OCCUR_DATE column to 'date' format, and the 'OCCUR_TIME' column to POSIXct format. We will also discard some columns we do not need.
+
+```{r clean, echo=TRUE}
+nypd_data$OCCUR_DATE = as.Date(nypd_data$OCCUR_DATE, format= "%m/%d/%Y")
+nypd_data$OCCUR_TIME <- as.POSIXct(nypd_data$OCCUR_TIME, format = '%H:%M:%S') # convert character column to time
+
+nypd_data <- nypd_data %>% select(-c(X_COORD_CD, Y_COORD_CD, Latitude, Longitude, Lon_Lat))
+```
+
+Now, let's look at a summay of our dataset.
+
+```{r summary}
+summary(nypd_data)
+```
+
+
+Let's check to see if there are any missing values in the data
+
+```{r check_nas, echo=TRUE}
+colSums(is.na(nypd_data))
+```
+
+From the output we see that we have quite a few missing values in some of our features. We will have to keep an eye on that.
+
+## Data Visualisation
+
+There are many ways to visualize the data but we are only going to look at a couple. First of all we'll take a look at the age distribution of the perpertrators of crime in New Yprk city over this period.
+
+```{r age_dist}
+# create a new dataframe containing the age distribution of crime perpetrators
+age_dist_df <- data.frame(table(nypd_data$PERP_AGE_GROUP))
+
+# clean up by discarding some uninformative values
+
+age_dist_df <- age_dist_df[c(1,3,5,6,7),]
+
+# plot a bar chart
+
+g1 <- ggplot(age_dist_df, aes(x=Var1, y=Freq)) + geom_bar(stat='identity', fill = '#FF6666', color = 'black') + labs(x='Age Group (Years)', y = 'Total Incidents')
+g1
+
+```
+
+What's clearly visible is that the vast majority of crime is perpetrated by people between the ages of 18 and 44, or at least that are investigated by the NYPD according to our data.
+
+
+Next, We are going to visualise the trend in shooting incidents over time between 2006 and 2020. The visualisation below will show the annual count of shooting incidents, both involving a murder and not.  
+
+```{r plots, echo = TRUE}
+g2 <- ggplot(nypd_data, aes(x = format(OCCUR_DATE, "%Y"))) + geom_point(stat = "count") + labs(x = "Year")
+g2
+```
+
+From the plot it looks like the number of shooting incidents and the number of murder incidents may be correlated.
+
+We will do some further data transformation here to isolate the murder incidents and non-murder incidents ('OTHERS') in the data. We also plot the data below.
+
+```{r murd}
+df2 <- nypd_data %>% mutate(month = format(OCCUR_DATE, "%m"), year = format(OCCUR_DATE, "%Y")) %>% group_by(month, year) %>% count(STATISTICAL_MURDER_FLAG) %>% pivot_wider(names_from = STATISTICAL_MURDER_FLAG, values_from = n)
+# rename the columns to be more descriptive
+colnames(df2)[3] = 'OTHER'
+colnames(df2)[4] = 'MURDER'
+
+g3 <- ggplot(df2)+geom_point(aes(x=MURDER, y=OTHER))
+g3
+```
+
+
+## Data Modelling
+
+We will attempt to make a simple predictive model of the relationship between the number of crime incidents in the first quarter of a given year and the toal number of incidents that occur throughout that year (rather than model against the total incidents in the year, instead we will use the total incidents in the remaining 3 quarters so that we avoid leakage wherein information from our predictors is contained in the response). We will model the relationship with the use of a simple linear regression to model. But first, let's prepare our data for this purpose.
+
+With the below code we get the counts for incidents occuring in the first quarter of the year and also the count of total numberof incidents in the rest of the year, and then we combine into a single dataframe.
+
+```{r model_data}
+nypd_data$year <- format(nypd_data$OCCUR_DATE,'%Y')
+nypd_data$quarter <- quarters(nypd_data$OCCUR_DATE)
+df <- nypd_data %>% group_by(year, quarter) %>% count()
+df1 <- df[df$quarter=='Q1',]
+df2 <-df %>% group_by(year) %>% summarise(total=sum(n))
+Q1_df <- merge(df1,df2)
+Q1_df$total <- Q1_df$total - Q1_df$n
+Q1_df
+
+```
+
+Now we create our linear regression model with the Total annual incients regressed on the total quarterly incidents. 
+
+```{r simple_model}
+simple_lin_mod <- lm(total ~ n, Q1_df)
+summary(simple_lin_mod)
+g4 <- ggplot(Q1_df, aes(x=n,y=total)) + geom_point() + geom_smooth(method='lm')
+g4
+```
+
+We can see from the graph and the output of our model that there appears to be a relationship between the number of incidnets in the first quarter and the total number for the remaining quarters. In particular the p-value for our slope parameter is quite significant. This seems like a promising direction of enquiry to pursue.
+
+## Sources of Bias
+
+I have identified 2 main sources of bias that may have influenced my analysis of this particular dataset.
+The first is that I have a preconceived notion of US police being rather violent in general. This is largely as a reult of their portrayal in entertainment, the news and other media. I took note of this and tried to not allow it influence my methodology in this study.
+The second source of bias I identified is that as an African I am also aware about all the criticisms faced by the US police in regard to their interactions with race. in this instance, since I did not analyse any racial aspect of the data I do not beleieve this is of concern other than to be noted down.
+
+## Conclusion
+
+Our initial analysis suggests there is a relationship between the number of incidents in the first quarter of the year and the total in the rest of the year. I believe this area of analysis could be usueful in annual for law enforcement planning, as having an idea what to expect any given year means an appropriate level of response could be prepared in advance.   
+
+
+
+
+
