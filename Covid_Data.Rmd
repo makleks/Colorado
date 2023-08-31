@@ -3,8 +3,9 @@ title: "Covid Final"
 
 date: "8/12/2021"
 output:
-  pdf_document: default
-  html_document: default
+rmarkdown::github_document
+##  pdf_document: default
+##  html_document: default
 ---
 
 ```{r setup, include=FALSE}
